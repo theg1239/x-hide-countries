@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>X Country Filter Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>X Country Filter</h1>
+      <p>Manage the list of ISO country codes to hide.</p>
+      <form id="countries-form">
+        <label for="countries-input">Blocked country codes (comma separated, e.g. US,IN,RU)</label>
+        <textarea id="countries-input" rows="4" placeholder="US,IN"></textarea>
+        <button type="submit">Save</button>
+        <output id="status" role="status" aria-live="polite"></output>
+      </form>
+    </main>
+    <script src="options.js" type="module"></script>
+  </body>
+</html>
