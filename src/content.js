@@ -1,17 +1,26 @@
 const STORAGE_KEY = "blockedCountries";
 const GRAPHQL_ENDPOINT = "https://x.com/i/api/graphql/XRqGa7EeokUU5kppkh13EA/AboutAccountQuery?variables=";
 const BEARER_TOKEN = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
-const LOOKUP_CACHE_TTL = 1000 * 60 * 10;
-const NULL_RESULT_TTL = 1000 * 60 * 2;
+const LOOKUP_CACHE_TTL = 1000 * 60 * 60 * 24 * 30; // 30 days
+const NULL_RESULT_TTL = 1000 * 60 * 60 * 24; // 24 hours for negative entries
 const processedMarker = "data-country-filter-processed";
 const LOG_PREFIX = "[X Country Filter]";
 const CACHE_STORAGE_KEY = "countryCodeCache";
+const PREFS_KEY = "countryFilterPreferences";
 const CACHE_PERSIST_DEBOUNCE_MS = 2000;
 const MAX_CACHE_ENTRIES = 500;
 const REQUEST_INTERVAL_MS = 450;
 const RATE_LIMIT_BACKOFF_MS = 60 * 1000;
 const ERROR_BACKOFF_MS = 15 * 1000;
 const RATE_LIMIT_STATUSES = new Set([420, 429]);
+const DEFAULT_PREFERENCES = {
+	hideStyle: "card",
+	placeholderText: "Hidden tweet from {{COUNTRY}}",
+	accentColor: "#1d9bf0"
+};
+const PLACEHOLDER_CLASS = "xcountry-filter-placeholder";
+const PLACEHOLDER_BUTTON_CLASS = "xcountry-filter-show-button";
+const STYLE_ELEMENT_ID = "xcountry-filter-style";
 const ISO_COUNTRY_CODES = [
 	"AF",
 	"AX",
@@ -359,12 +368,15 @@ const MANUAL_COUNTRY_ALIASES = [
 const lookupCache = new Map();
 const pendingLookups = new Map();
 const lookupQueue = [];
+const placeholderMap = new WeakMap();
 let blockedCountries = new Set();
 let mutationObserver;
 let queueProcessing = false;
 let backoffUntil = 0;
 let cachePersistHandle = null;
+let preferences = { ...DEFAULT_PREFERENCES };
 const COUNTRY_NAME_LOOKUP = buildCountryNameLookup();
+const REGION_DISPLAY = typeof Intl !== "undefined" && Intl.DisplayNames ? new Intl.DisplayNames([navigator.language || "en"], { type: "region" }) : null;
 
 init();
 
@@ -376,22 +388,53 @@ function warn(...args) {
 	console.warn(LOG_PREFIX, ...args);
 }
 
+function updatePreferences(next) {
+	const merged = {
+		...DEFAULT_PREFERENCES,
+		...(next || {})
+	};
+	if (!/^(card|compact)$/i.test(merged.hideStyle)) {
+		merged.hideStyle = DEFAULT_PREFERENCES.hideStyle;
+	} else {
+		merged.hideStyle = merged.hideStyle.toLowerCase();
+	}
+	merged.placeholderText = (merged.placeholderText || DEFAULT_PREFERENCES.placeholderText).toString().slice(0, 120);
+	if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(merged.accentColor || "")) {
+		merged.accentColor = DEFAULT_PREFERENCES.accentColor;
+	}
+	preferences = merged;
+	log("Preferences updated", merged);
+}
+
 function init() {
-	chrome.storage.sync.get({ [STORAGE_KEY]: [] }, (data) => {
+	const defaults = {
+		[STORAGE_KEY]: [],
+		[PREFS_KEY]: DEFAULT_PREFERENCES
+	};
+	chrome.storage.sync.get(defaults, (data) => {
 		blockedCountries = new Set(normalizeCountryList(data[STORAGE_KEY]));
 		log("Loaded blocked countries", Array.from(blockedCountries));
+		updatePreferences(data[PREFS_KEY]);
+		ensureStylesInjected();
 		hydrateCacheFromStorage().then(() => {
 			watchTimeline();
 		});
 	});
 
 	chrome.storage.onChanged.addListener((changes, area) => {
-		if (area !== "sync" || !changes[STORAGE_KEY]) {
+		if (area !== "sync") {
 			return;
 		}
-		blockedCountries = new Set(normalizeCountryList(changes[STORAGE_KEY].newValue || []));
-		log("Storage updated", Array.from(blockedCountries));
-		reapplyFilters();
+		if (changes[STORAGE_KEY]) {
+			blockedCountries = new Set(normalizeCountryList(changes[STORAGE_KEY].newValue || []));
+			log("Storage updated", Array.from(blockedCountries));
+			reapplyFilters();
+		}
+		if (changes[PREFS_KEY]) {
+			updatePreferences(changes[PREFS_KEY].newValue || DEFAULT_PREFERENCES);
+			ensureStylesInjected(true);
+			reapplyFilters();
+		}
 	});
 }
 
@@ -499,6 +542,12 @@ function extractScreenName(article) {
 }
 
 function applyFilter(article) {
+	if (article.dataset.countryFilterManual === "1") {
+		log("applyFilter manual override active");
+		revealTweet(article);
+		return;
+	}
+
 	const countryCode = article.dataset.countryCode;
 	if (!countryCode) {
 		log("applyFilter no country code", article.dataset.countryFilterState);
@@ -516,15 +565,50 @@ function applyFilter(article) {
 }
 
 function hideTweet(article, countryCode) {
+	removePlaceholder(article);
 	article.style.display = "none";
-	article.dataset.countryFilterState = `hidden-${countryCode}`;
+	article.dataset.countryFilterState = `hidden-${countryCode || "unknown"}`;
+	insertPlaceholder(article, countryCode);
 	log("hideTweet", countryCode);
 }
 
 function revealTweet(article) {
+	removePlaceholder(article);
 	article.style.display = "";
 	article.dataset.countryFilterState = "visible";
 	log("revealTweet");
+}
+
+function insertPlaceholder(article, countryCode) {
+	if (!article?.parentElement) {
+		return;
+	}
+	ensureStylesInjected();
+	const placeholder = document.createElement("div");
+	placeholder.className = PLACEHOLDER_CLASS;
+	placeholder.dataset.style = preferences.hideStyle || DEFAULT_PREFERENCES.hideStyle;
+	placeholder.style.setProperty("--x-filter-accent", getAccentColor());
+	const messageEl = document.createElement("span");
+	messageEl.textContent = formatPlaceholderMessage(countryCode);
+	const button = document.createElement("button");
+	button.type = "button";
+	button.className = PLACEHOLDER_BUTTON_CLASS;
+	button.textContent = "Show tweet";
+	button.addEventListener("click", () => {
+		article.dataset.countryFilterManual = "1";
+		revealTweet(article);
+	});
+	placeholder.append(messageEl, button);
+	placeholderMap.set(article, placeholder);
+	article.insertAdjacentElement("beforebegin", placeholder);
+}
+
+function removePlaceholder(article) {
+	const placeholder = placeholderMap.get(article);
+	if (placeholder) {
+		placeholder.remove();
+		placeholderMap.delete(article);
+	}
 }
 
 function normalizeCountryList(list) {
@@ -539,6 +623,8 @@ function normalizeCountryList(list) {
 function reapplyFilters() {
 	log("Reapplying filters to existing tweets");
 	document.querySelectorAll('article[data-testid="tweet"]').forEach((article) => {
+		removePlaceholder(article);
+		article.style.display = "";
 		const currentCode = article.dataset.countryCode;
 		if (currentCode) {
 			log("Reapply existing code", currentCode);
@@ -842,6 +928,49 @@ function createDeferred() {
 		reject = rej;
 	});
 	return { promise, resolve, reject };
+}
+
+function formatPlaceholderMessage(countryCode) {
+	const template = (preferences.placeholderText || DEFAULT_PREFERENCES.placeholderText).trim() || DEFAULT_PREFERENCES.placeholderText;
+	const code = (countryCode || "").toUpperCase() || "??";
+	const label = formatCountryLabel(countryCode);
+	return template
+		.replace(/\{\{\s*(country|name)\s*\}\}/gi, label)
+		.replace(/\{\{\s*code\s*\}\}/gi, code);
+}
+
+function formatCountryLabel(countryCode) {
+	if (!countryCode) {
+		return "blocked country";
+	}
+	const formatted = REGION_DISPLAY?.of(countryCode.toUpperCase());
+	return formatted || countryCode;
+}
+
+function getAccentColor() {
+	const color = preferences.accentColor || DEFAULT_PREFERENCES.accentColor;
+	return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(color) ? color : DEFAULT_PREFERENCES.accentColor;
+}
+
+function ensureStylesInjected(force = false) {
+	let styleEl = document.getElementById(STYLE_ELEMENT_ID);
+	const css = [
+		`.${PLACEHOLDER_CLASS}{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:rgba(15,20,25,0.9);border:1px solid var(--x-filter-accent,#1d9bf0);border-radius:12px;margin:8px 0;padding:0.75rem 1rem;display:flex;gap:0.75rem;align-items:center;justify-content:space-between;color:#f7f9f9;}`,
+		`.${PLACEHOLDER_CLASS} span{flex:1;min-width:0;}`,
+		`.${PLACEHOLDER_CLASS}[data-style="compact"]{border-radius:999px;padding:0.4rem 0.85rem;font-size:0.85rem;}`,
+		`.${PLACEHOLDER_BUTTON_CLASS}{background:var(--x-filter-accent,#1d9bf0);border:none;border-radius:999px;color:#fff;padding:0.35rem 0.9rem;font-weight:600;cursor:pointer;}`,
+		`.${PLACEHOLDER_BUTTON_CLASS}:hover{opacity:0.9;}`,
+		`.${PLACEHOLDER_BUTTON_CLASS}:focus-visible{outline:2px solid #fff;}`
+	].join("");
+	if (styleEl && !force) {
+		return;
+	}
+	if (!styleEl) {
+		styleEl = document.createElement("style");
+		styleEl.id = STYLE_ELEMENT_ID;
+		(document.head || document.documentElement)?.appendChild(styleEl);
+	}
+	styleEl.textContent = css;
 }
 
 function normalizeCountryName(value) {

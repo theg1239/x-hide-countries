@@ -12,6 +12,26 @@
       <form id="countries-form">
         <label for="countries-input">Blocked country codes (comma separated, e.g. US,IN,RU)</label>
         <textarea id="countries-input" rows="4" placeholder="US,IN"></textarea>
+        <section class="personalization">
+          <h2>Personalization</h2>
+          <label for="hide-style">Hidden tweet appearance</label>
+          <select id="hide-style">
+            <option value="card">Card with full message & button</option>
+            <option value="compact">Compact pill with button</option>
+          </select>
+
+          <label for="placeholder-text">Placeholder message</label>
+          <input
+            id="placeholder-text"
+            type="text"
+            maxlength="120"
+            placeholder="Hidden tweet from {{COUNTRY}}"
+          />
+          <p class="hint">Use <code>{{COUNTRY}}</code> for the country name and <code>{{CODE}}</code> for the ISO code.</p>
+
+          <label for="accent-color">Accent color</label>
+          <input id="accent-color" type="color" value="#1d9bf0" />
+        </section>
         <button type="submit">Save</button>
         <output id="status" role="status" aria-live="polite"></output>
       </form>

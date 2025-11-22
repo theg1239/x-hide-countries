@@ -15,6 +15,23 @@ textarea {
   margin-block: 0.5rem 1rem;
 }
 
+label {
+  display: block;
+  margin-top: 1rem;
+  font-weight: 600;
+}
+
+input,
+select {
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.4rem;
+  border-radius: 6px;
+  border: 1px solid #38444d;
+  background: #15202b;
+  color: #f7f9f9;
+}
+
 button {
   padding: 0.35rem 0.9rem;
   font-weight: 600;
@@ -24,4 +41,30 @@ button {
   display: inline-block;
   margin-left: 0.75rem;
   min-height: 1rem;
+}
+
+.personalization {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid #243447;
+  border-radius: 10px;
+  background: #111821;
+}
+
+.personalization h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.15rem;
+}
+
+.hint {
+  font-size: 0.85rem;
+  margin: 0.35rem 0 0.5rem;
+  color: #8899a6;
+}
+
+code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  background: #192734;
+  padding: 0 0.25rem;
+  border-radius: 4px;
 }
