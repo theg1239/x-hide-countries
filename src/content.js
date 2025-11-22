@@ -10,8 +10,8 @@ const PREFS_KEY = "countryFilterPreferences";
 const CACHE_PERSIST_DEBOUNCE_MS = 2000;
 const MAX_CACHE_ENTRIES = 500;
 const REQUEST_INTERVAL_MS = 450;
-const RATE_LIMIT_BACKOFF_MS = 60 * 1000;
-const ERROR_BACKOFF_MS = 15 * 1000;
+const BASE_BACKOFF_MS = 1000;
+const BACKOFF_MULTIPLIER = 1.5;
 const RATE_LIMIT_STATUSES = new Set([420, 429]);
 const DEFAULT_PREFERENCES = {
 	hideStyle: "card",
@@ -375,6 +375,7 @@ let queueProcessing = false;
 let backoffUntil = 0;
 let cachePersistHandle = null;
 let preferences = { ...DEFAULT_PREFERENCES };
+let backoffAttempts = 0;
 const COUNTRY_NAME_LOOKUP = buildCountryNameLookup();
 const REGION_DISPLAY = typeof Intl !== "undefined" && Intl.DisplayNames ? new Intl.DisplayNames([navigator.language || "en"], { type: "region" }) : null;
 
@@ -709,6 +710,7 @@ function executeLookupJob(job) {
 			const code = extractCountryCode(payload);
 			log("Fetched country", screenName, code);
 			cacheResult(normalized, code);
+			resetBackoff();
 			deferred.resolve(code);
 			pendingLookups.delete(normalized);
 			return false;
@@ -716,13 +718,14 @@ function executeLookupJob(job) {
 		.catch((error) => {
 			if (error && error.retry) {
 				warn("Rate limited for", screenName, "re-queuing after backoff");
+				startJitterBackoff(error.reason || "rate limited");
 				return true;
 			}
 			warn("Unable to fetch country for", screenName, error);
 			cacheResult(normalized, null, NULL_RESULT_TTL);
 			deferred.resolve(null);
 			pendingLookups.delete(normalized);
-			startBackoff(ERROR_BACKOFF_MS, error?.message || "lookup error");
+			startJitterBackoff(error?.message || "lookup error");
 			return false;
 		});
 }
@@ -738,9 +741,9 @@ function requestCountryPayload(screenName) {
 	}).then((response) => {
 		if (RATE_LIMIT_STATUSES.has(response.status)) {
 			warn("GraphQL rate limit", screenName, response.status);
-			startBackoff(RATE_LIMIT_BACKOFF_MS, `status ${response.status}`);
 			const error = new Error("Rate limited");
 			error.retry = true;
+			error.reason = `status ${response.status}`;
 			throw error;
 		}
 		if (!response.ok) {
@@ -912,12 +915,25 @@ function serializeCacheEntries() {
 	return serialized;
 }
 
-function startBackoff(duration, reason) {
-	const target = Date.now() + duration;
+function startJitterBackoff(reason) {
+	backoffAttempts += 1;
+	const exponent = Math.max(0, backoffAttempts - 1);
+	const cap = BASE_BACKOFF_MS * Math.pow(BACKOFF_MULTIPLIER, exponent);
+	const wait = Math.random() * cap;
+	const target = Date.now() + wait;
 	if (target > backoffUntil) {
 		backoffUntil = target;
 	}
-	log("Backoff set for", duration, "ms", reason ? `(${reason})` : "");
+	log("Backoff set for", Math.round(wait), "ms", reason ? `(${reason})` : "");
+}
+
+function resetBackoff() {
+	if (backoffAttempts === 0 && backoffUntil === 0) {
+		return;
+	}
+	backoffAttempts = 0;
+	backoffUntil = 0;
+	log("Backoff reset");
 }
 
 function createDeferred() {
